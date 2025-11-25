@@ -83,27 +83,56 @@ st.set_page_config(layout = 'wide')
 # Streamlit layout settings
 tab1, tab2, tab3 = st.tabs(["Shooting Filtered", "Other Shooting", "Ball Handling"])
 
-players = pd.read_csv("datasets/sample/players.csv", dtype={'ID': str})
+players_schema = {
+    'ID': str,
+    'name': str
+}
+
+file_path = glob.glob('players/*.csv' )
+players = []
+for file in file_path:
+    players.append(pd.read_csv(file, names=['ID', 'Name'], dtype=players_schema))
+
+players = pd.concat(players)
+players = players.dropna()
+
+# Filter Players to be sample only
+player_list = ['893', '252', '406', '947', '1495', '708', '959', '1717', '977', '2544', '201565', '201142', '201939', '201566', '201935', '203507', '203999', '203954', '1628983']
+players = players[players['ID'].isin(player_list)]
 players['select'] = players['Name'] + ' | ' + players['ID']
 player = st.sidebar.selectbox("Select Player", players['select'], key='player')
 player = player.split(' | ')[1]
 
 # Filter Opponent
-teams = pd.read_csv("datasets/sample/teams.csv", dtype={'ID': str})
+teams_schema = {
+    'ID': str,
+    'City': str,
+    'Nickname': str,
+    'Abbreviation': str
+}
+
+file_path = glob.glob('teams/*.csv' )
+teams = []
+for file in file_path:
+    teams.append(pd.read_csv(file, names=['ID', 'City', 'Nickname', 'Abbreviation'], dtype=teams_schema))
+
+teams = pd.concat(teams)
+teams = teams.dropna()
 teams['select'] = teams['Abbreviation'] + ' | ' + teams['ID']
 teams_list = np.insert(teams['select'], 0, "ALL")
 opponent = st.sidebar.selectbox("Select Opponent", teams_list, key='opponent')
 
 if player:
-    file_path = glob.glob('datasets/sample/player_data/PLAYER1_ID=' + player + '/*' )
+    file_path = glob.glob('player_data/PLAYER1_ID=' + player + '/*' )
     player_data1 = pd.read_parquet(file_path)
 
 # Filter By Season
-season = st.sidebar.selectbox("Select Season", player_data1['SEASON'].unique(), key='season')
+seasons = np.sort(player_data1['SEASON'].unique())
+season = st.sidebar.selectbox("Select Season", seasons, key='season')
 player_data1 =  player_data1[player_data1['SEASON'] == int(season)]
 
 # Get Perecentiles
-file_path = glob.glob('datasets/sample/season_totals/SEASON=' + str(season) + '/*' )
+file_path = glob.glob('totals/SEASON=' + str(season) + '/*' )
 percentiles_data = pd.read_parquet(file_path)
 player_percentiles = percentiles_data[percentiles_data['ID'] == player]
 
@@ -149,13 +178,13 @@ with tab1:
     if len(player_shots) > 0:
         date_range = col2.slider(
             "Select a Date Range",
-            min_value=player_shots['GAME_DATE'].min().to_pydatetime(),
-            max_value=player_shots['GAME_DATE'].max().to_pydatetime(),
-            value=(player_shots['GAME_DATE'].min().to_pydatetime(), player_shots['GAME_DATE'].max().to_pydatetime()),
+            min_value=player_shots['GAME_DATE'].min(), #.to_pydatetime()
+            max_value=player_shots['GAME_DATE'].max(), #.to_pydatetime()
+            value=(player_shots['GAME_DATE'].min(), player_shots['GAME_DATE'].max()),
             key='date'
         )
-        player_shots = player_shots[player_shots['GAME_DATE'] <= pd.Timestamp(date_range[1])]
-        player_shots = player_shots[player_shots['GAME_DATE'] >= pd.Timestamp(date_range[0])]
+        player_shots = player_shots[player_shots['GAME_DATE'] <= date_range[1]]
+        player_shots = player_shots[player_shots['GAME_DATE'] >= date_range[0]]
 
     # Filter Shot Methods
     method_list = np.insert(player_shots['SHOT_METHOD'].unique(), 0, "ALL")
@@ -164,7 +193,7 @@ with tab1:
         player_shots = player_shots[player_shots['SHOT_METHOD'] == method]
 
     # Filter by a Shot attribute
-    attributes_list = ["ALL", "ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP", "TURNAROUND"]
+    attributes_list = ["ALL", "ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP"]
     attribute = col2.selectbox("Select Shot Attribute", attributes_list, key='attribute')
     if attribute != "ALL":
         player_shots = player_shots[player_shots[attribute]]
@@ -264,14 +293,14 @@ with tab1:
 with tab2:
     # PLOT SHOT METHOD vs ATTRIBUTE
 
-    player_shot_totals = player_shots_raw[['SHOT_ATTEMPTED_FLAG', "SHOT_MADE_FLAG", "SHOT_METHOD", "ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP", "TURNAROUND"]]
+    player_shot_totals = player_shots_raw[['SHOT_ATTEMPTED_FLAG', "SHOT_MADE_FLAG", "SHOT_METHOD", "ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP"]]
 
-    fga = pd.melt(player_shot_totals, id_vars=['SHOT_METHOD'], value_vars=["ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP", "TURNAROUND"])
+    fga = pd.melt(player_shot_totals, id_vars=['SHOT_METHOD'], value_vars=["ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP"])
     fga = fga[fga['value']]
     fga = fga.rename(columns={'SHOT_METHOD': 'METHOD', 'variable': 'ATTRIBUTE', 'value': 'FGA'})
     fga = fga.groupby(['METHOD', 'ATTRIBUTE']).sum()
 
-    fgm = pd.melt(player_shot_totals[player_shot_totals['SHOT_MADE_FLAG']], id_vars=['SHOT_METHOD'], value_vars=["ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP", "TURNAROUND"])
+    fgm = pd.melt(player_shot_totals[player_shot_totals['SHOT_MADE_FLAG']], id_vars=['SHOT_METHOD'], value_vars=["ALLEY OOP", "BANK", "CUTTING", "DRIVING", "FLOATING", "PULLUP", "PUTBACK", "RUNNING", "REVERSE", "STEP BACK", "TIP"])
     fgm = fgm[fgm['value']]
     fgm = fgm.rename(columns={'SHOT_METHOD': 'METHOD', 'variable': 'ATTRIBUTE', 'value': 'FGM'})
     fgm = fgm.groupby(['METHOD', 'ATTRIBUTE']).sum()

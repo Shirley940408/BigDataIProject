@@ -55,7 +55,7 @@ nbastats_schema_raw = types.StructType([
 ])
 
 # Generate NBAstats data
-nbastats = spark.read.csv('datasets/raw_data/nbastats', header=True, schema=nbastats_schema_raw)
+nbastats = spark.read.csv('datasets/raw_data/nbastats', schema=nbastats_schema_raw)
 
 # Filter play events
 nbastats = nbastats.filter(
@@ -126,7 +126,7 @@ shotdetail_schema_raw = types.StructType([
     types.StructField('VTM', types.StringType()),
 ])	
 
-shotdetail = spark.read.csv('datasets/raw_data/shotdetail', header=True, schema=shotdetail_schema_raw, dateFormat="yyyyMMdd")
+shotdetail = spark.read.csv('datasets/raw_data/shotdetail', schema=shotdetail_schema_raw, dateFormat="yyyyMMdd")
 
 # Format Action Type Column
 shotdetail = shotdetail.withColumn('ACTION_TYPE', upper(shotdetail['ACTION_TYPE']))

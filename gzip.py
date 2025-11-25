@@ -1,7 +1,4 @@
-#%%
-
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, concat_ws, when, regexp_replace, split
 from pyspark.sql import types
 
 spark = (
@@ -12,7 +9,6 @@ spark = (
         .config("spark.sql.files.maxPartitionBytes", "128m")
         .getOrCreate()
 )
-
 nbastats_schema_raw = types.StructType([
     types.StructField('GAME_ID', types.IntegerType()),
     types.StructField('EVENTNUM', types.IntegerType()),
@@ -51,56 +47,36 @@ nbastats_schema_raw = types.StructType([
     types.StructField('SEASON', types.IntegerType()),
 ])
 
-# Default of 29 partitions on load dont need to repartition
-def load_nbastats():
-    nbastats = spark.read.csv('datasets/raw_data/nbastats', schema=nbastats_schema_raw)
-
-    # Filter play events
-    nbastats = nbastats.filter(
-        (col('EVENTMSGTYPE') <= 5) & (col('EVENTMSGTYPE') != 4)
-    )
-
-    # Create Description Column
-    nbastats = nbastats.withColumn("DESCRIPTION",concat_ws("", nbastats["HOMEDESCRIPTION"], nbastats["NEUTRALDESCRIPTION"], nbastats["VISITORDESCRIPTION"]))
-
-    # Move Player 3 IDs to Player 2 when the play has a block
-    mask = col("DESCRIPTION").contains(' BLK)')
-
-    nbastats = nbastats \
-        .withColumn("PERSON2TYPE", when(mask, col("PERSON3TYPE")).otherwise(col("PERSON2TYPE"))) \
-        .withColumn("PERSON2_ID", when(mask, col("PLAYER3_ID")).otherwise(col("PLAYER2_ID"))) \
-        .withColumn("PERSON2_NAME", when(mask, col("PLAYER3_NAME")).otherwise(col("PLAYER2_NAME"))) \
-        .withColumn("PERSON2_TEAM_ID", when(mask, col("PLAYER3_TEAM_ID")).otherwise(col("PLAYER2_TEAM_ID")))
-
-    # Select final columns
-    nbastats = nbastats.select(
-        "GAME_ID", "EVENTNUM", "EVENTMSGTYPE", "PERIOD", "PCTIMESTRING", "DESCRIPTION", "SCOREMARGIN", "PLAYER1_ID", "PLAYER1_NAME", 
-        "PLAYER1_TEAM_ID", "PLAYER1_TEAM_CITY", "PLAYER1_TEAM_NICKNAME", "PLAYER1_TEAM_ABBREVIATION", "PLAYER2_ID", "PLAYER2_NAME", "SEASON"
-    )
-
-    #Removing Trailing Decimals on TeamID on load
-    nbastats = nbastats.withColumn("PLAYER1_TEAM_ID", regexp_replace("PLAYER1_TEAM_ID", ".0", ""))
-
-    # Split time to minutes and seconds
-    nbastats = nbastats \
-        .withColumn("MINUTES", split(col("PCTIMESTRING"), ":").getItem(0).cast("int")) \
-        .withColumn("SECONDS", split(col("PCTIMESTRING"), ":").getItem(1).cast("int"))
-
-    # Clean Fill NULLs with empty string 
-    nbastats = nbastats.filter(col("PLAYER1_TEAM_ID").isNotNull())
-
-    nbastats = nbastats.withColumn(
-        "PLAYER2_ID",
-        regexp_replace(col("PLAYER2_ID"), r"^0$", "")
-    )
-        
-    return nbastats
-
-# Testing Function - Default partitions are 29
-nbastats = load_nbastats()
-nbastats.show()
-print(nbastats.count())
-# nbastats.write.mode("overwrite").format("csv").save("datasets/nbastats")
+nbastats = spark.read.csv('datasets/raw_data_old/nbastats', header=True, schema=nbastats_schema_raw)
+nbastats.write.mode("overwrite").option("compression", "gzip").format("csv").save("datasets/raw_data/nbastats")
 
 
-#%%
+shotdetail_schema_raw = types.StructType([
+    types.StructField('GRID_TYPE', types.StringType()),
+    types.StructField('GAME_ID', types.IntegerType()),
+    types.StructField('GAME_EVENT_ID', types.IntegerType()),
+    types.StructField('PLAYER_ID', types.IntegerType()),
+    types.StructField('PLAYER_NAME', types.StringType()),
+    types.StructField('TEAM_ID', types.IntegerType()),
+    types.StructField('TEAM_NAME', types.StringType()),
+    types.StructField('PERIOD', types.IntegerType()),
+    types.StructField('MINUTES_REMAINING', types.IntegerType()),
+    types.StructField('SECONDS_REMAINING', types.IntegerType()),
+    types.StructField('EVENT_TYPE', types.StringType()),
+    types.StructField('ACTION_TYPE', types.StringType()),
+    types.StructField('SHOT_TYPE', types.StringType()),
+    types.StructField('SHOT_ZONE_BASIC', types.StringType()),
+    types.StructField('SHOT_ZONE_AREA', types.StringType()),
+    types.StructField('SHOT_ZONE_RANGE', types.StringType()),
+    types.StructField('SHOT_DISTANCE', types.IntegerType()),
+    types.StructField('LOC_X', types.IntegerType()),
+    types.StructField('LOC_Y', types.IntegerType()),
+    types.StructField('SHOT_ATTEMPTED_FLAG', types.IntegerType()),
+    types.StructField('SHOT_MADE_FLAG', types.IntegerType()),
+    types.StructField('GAME_DATE', types.StringType()),
+    types.StructField('HTM', types.StringType()),
+    types.StructField('VTM', types.StringType()),
+])
+
+shotdetail = spark.read.csv('datasets/raw_data_old/shotdetail', header=True, schema=shotdetail_schema_raw)
+shotdetail.write.mode("overwrite").option("compression", "gzip").format("csv").save("datasets/raw_data/shotdetail")
