@@ -14,8 +14,10 @@ spark = (
         .getOrCreate()
 )
 
+# Define Checkpoint Location
 spark.sparkContext.setCheckpointDir('checkpoint')
 
+# Define Schema to Load nbastats files
 nbastats_schema_raw = types.StructType([
     types.StructField('GAME_ID', types.IntegerType()),
     types.StructField('EVENTNUM', types.IntegerType()),
@@ -54,10 +56,10 @@ nbastats_schema_raw = types.StructType([
     types.StructField('SEASON', types.IntegerType()),
 ])
 
-# Generate NBAstats data
+# Read NBAstats data
 nbastats = spark.read.csv('datasets/raw_data/nbastats', schema=nbastats_schema_raw)
 
-# Filter play events
+# Filter Players to only ones we are interested in - Shots, Free Throws, Turnovers
 nbastats = nbastats.filter(
     (col('EVENTMSGTYPE') <= 5) & (col('EVENTMSGTYPE') != 4)
 )
@@ -67,20 +69,19 @@ nbastats = nbastats.withColumn("DESCRIPTION",concat_ws("", nbastats["HOMEDESCRIP
 
 # Move Player 3 IDs to Player 2 when the play has a block
 mask = col("DESCRIPTION").contains(' BLK)')
-
 nbastats = nbastats \
     .withColumn("PERSON2TYPE", when(mask, col("PERSON3TYPE")).otherwise(col("PERSON2TYPE"))) \
     .withColumn("PERSON2_ID", when(mask, col("PLAYER3_ID")).otherwise(col("PLAYER2_ID"))) \
     .withColumn("PERSON2_NAME", when(mask, col("PLAYER3_NAME")).otherwise(col("PLAYER2_NAME"))) \
     .withColumn("PERSON2_TEAM_ID", when(mask, col("PLAYER3_TEAM_ID")).otherwise(col("PLAYER2_TEAM_ID")))
 
-# Select final columns
+# Select Columns Needed
 nbastats = nbastats.select(
     "GAME_ID", "EVENTNUM", "EVENTMSGTYPE", "PERIOD", "PCTIMESTRING", "DESCRIPTION", "SCOREMARGIN", "PLAYER1_ID", "PLAYER1_NAME", 
     "PLAYER1_TEAM_ID", "PLAYER1_TEAM_CITY", "PLAYER1_TEAM_NICKNAME", "PLAYER1_TEAM_ABBREVIATION", "PLAYER2_ID", "PLAYER2_NAME", "SEASON"
 )
 
-#Removing Trailing Decimals on TeamID on load
+#Removing the Trailing Decimals on TeamID on load
 nbastats = nbastats.withColumn("PLAYER1_TEAM_ID", regexp_replace("PLAYER1_TEAM_ID", ".0", ""))
 
 # Split time to minutes and seconds
@@ -88,17 +89,20 @@ nbastats = nbastats \
     .withColumn("MINUTES", split(col("PCTIMESTRING"), ":").getItem(0).cast("int")) \
     .withColumn("SECONDS", split(col("PCTIMESTRING"), ":").getItem(1).cast("int"))
 
-# Clean Fill NULLs with empty string 
+# Remove Turnovers where no player is associted
+# For Team Turnovers the Player1_ID is the Teams ID and PLAYER1_TeamID is null
 nbastats = nbastats.filter(col("PLAYER1_TEAM_ID").isNotNull())
 
+# Plays that do not involed a second player are loaded with a 0 instead of an empty string or null so replace
 nbastats = nbastats.withColumn(
     "PLAYER2_ID",
     regexp_replace(col("PLAYER2_ID"), r"^0$", "")
 )
 
+# Checkpoint the data for later
 nbastats.checkpoint()
 
-# Load Shotdetail
+# Load Shotdetail data with schema
 shotdetail_schema_raw = types.StructType([
     types.StructField('GRID_TYPE', types.StringType()),
     types.StructField('GAME_ID', types.IntegerType()),
@@ -125,7 +129,6 @@ shotdetail_schema_raw = types.StructType([
     types.StructField('HTM', types.StringType()),
     types.StructField('VTM', types.StringType()),
 ])	
-
 shotdetail = spark.read.csv('datasets/raw_data/shotdetail', schema=shotdetail_schema_raw, dateFormat="yyyyMMdd")
 
 # Format Action Type Column
@@ -134,16 +137,6 @@ shotdetail = shotdetail.withColumn(
     "ACTION_TYPE",
     regexp_replace("ACTION_TYPE", "-", "")
 )
-
-# For Dashboard solving later
-"""
-shotdetail = (
-shotdetail
-.withColumn(col, regexp_replace(col, "-", ""))
-.withColumn(col, regexp_replace(col, " ", "_"))
-.withColumn(col, regexp_replace(col, "/", ""))
-)
-"""
 
 # Get Any Attributes in String (Driving, cutting, etc...) and the Shot Method (Jump Shot, Hook Shot, etc...)
 attributes_method_patttern = r"^(.*?)(\b\w+ SHOT)$"
@@ -176,43 +169,48 @@ for attr in attr_cols:
     )
 shotdetail = shotdetail.drop("SHOT_ATTRIBUTES")
 
+# Change Column Types
 shotdetail = shotdetail.withColumn("SHOT_ATTEMPTED_FLAG", col("SHOT_ATTEMPTED_FLAG").cast("boolean"))
 shotdetail = shotdetail.withColumn("SHOT_MADE_FLAG", col("SHOT_MADE_FLAG").cast("boolean"))
 
+# Checkpoint for later
 shotdetail.checkpoint()
 
-# Create additional files for dashboards and fields later
+# Create a file that is a list of every player and their ID
 
-# Create Players File
+# remove accents added to player names
 def normalize_ascii_py(name):
     if name is None:
         return None
     return unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('utf-8')
 
+# Get all players from player1_ID column
 players1 = nbastats \
 .select("PLAYER1_ID", "PLAYER1_NAME") \
 .dropDuplicates(["PLAYER1_ID", "PLAYER1_NAME"]) \
 .withColumnRenamed("PLAYER1_ID", "ID") \
 .withColumnRenamed("PLAYER1_NAME", "Name")
 
+# Get all players from player2_ID column
 players2 = nbastats \
 .select("PLAYER2_ID", "PLAYER2_NAME") \
 .dropDuplicates(["PLAYER2_ID", "PLAYER2_NAME"]) \
-.filter(col("PLAYER2_ID") != "0") \
+.filter(col("PLAYER2_ID") != "") \
 .withColumnRenamed("PLAYER2_ID", "ID") \
 .withColumnRenamed("PLAYER2_NAME", "Name")
 
-# UNION both lists
+# Join the list of players and remove the duplicates
 players = players1.unionByName(players2)
 players = players.drop_duplicates(['ID'])
 
+# Use the funciton defined earlier to remove accents
 normalize_ascii = udf(normalize_ascii_py, types.StringType())
-
 players = players.withColumn("Name", normalize_ascii(col("Name")))
 
+# Save the dataframe
 players.write.mode("overwrite").format("csv").save("datasets/players")
 
-# Create Teams File
+# Create a file like previous but for each team instead of player
 teams = nbastats \
 .select("PLAYER1_TEAM_ID", "PLAYER1_TEAM_CITY", "PLAYER1_TEAM_NICKNAME", "PLAYER1_TEAM_ABBREVIATION", "SEASON") \
 .withColumnRenamed("PLAYER1_TEAM_ID", "ID") \
@@ -226,9 +224,10 @@ teams = nbastats \
 teams.checkpoint()
 teams.write.mode("overwrite").format("csv").save("datasets/teams")
 
+# Create a dataframe that is the log of every game played
 games = shotdetail.select("GAME_ID", "GAME_DATE", "HTM", "VTM").drop_duplicates(['GAME_ID'])
 
-
+# Use the teams dataframe to get team IDs as only the abbreviations are given in data source
 games = games.join(teams, games.HTM == teams.Abbreviation, how='inner') \
                 .withColumnRenamed("ID", "HOME_ID") \
                 .drop('City', 'Nickname', 'Abbreviation')
@@ -239,22 +238,25 @@ games = games.join(teams, games.VTM == teams.Abbreviation, how='inner') \
                 .select('GAME_ID', 'GAME_DATE', 'HOME_ID', 'AWAY_ID')
 
 games.checkpoint()
+
+# Save the dataframe
 games.write.mode("overwrite").format("csv").save("datasets/games")
 
-# Generate Column for Opponent
+# Use newly generated games dataframe to add an opponent column to nbastats dataframe
 nbastats = nbastats.join(games, on = 'GAME_ID', how='inner')
 nbastats = nbastats.withColumn("OPPONENT", when(col("PLAYER1_TEAM_ID") == col("HOME_ID"), col("AWAY_ID")).otherwise(col("HOME_ID")))
 
-# Drop Unneeded Columns now that Additional Files and Fields generated
+# Drop Unneeded Columns now that Additional Files generated(players, teams, games)
 nbastats = nbastats.drop('PLAYER1_NAME', 'PLAYER2_NAME', 'PLAYER1_TEAM_CITY', 'PLAYER1_TEAM_NICKNAME', 'PLAYER1_TEAM_ABBREVIATION', 'HOME_ID', 'AWAY_ID')
 shotdetail = shotdetail.drop('HTM', 'VTM', 'GAME_DATE')
+shotdetail = shotdetail.withColumnRenamed("GAME_ID", "SHOT_GAME_ID")
+
 
 nbastats.checkpoint()
 shotdetail.checkpoint()
 
-shotdetail = shotdetail.withColumnRenamed("GAME_ID", "SHOT_GAME_ID")
 
-# Join NBAstats and Shotdetail
+# Join NBAstats and Shotdetail dataframes to create final dataframe
 nbadata = nbastats.join(shotdetail, (nbastats.GAME_ID == shotdetail.SHOT_GAME_ID) & (nbastats.EVENTNUM == shotdetail.GAME_EVENT_ID), "left")
 nbadata = nbadata.drop("SHOT_GAME_ID", "GAME_EVENT_ID")
 nbadata.checkpoint()
@@ -273,15 +275,8 @@ nbadata.filter(col("PLAYER2_ID") != "") \
     .partitionBy("PLAYER2_ID") \
     .parquet("datasets/player_data")
 
-# Season data
-"""
-nbadata.write \
-    .mode("overwrite") \
-    .partitionBy("SEASON") \
-    .parquet("datasets/season_data")
-"""
-
-# Generate Totals
+# Generate a final additional dataframe that is the totals for each player to get their percentiles in specific stats for the dashboard
+# Create a column for the number of points scored each play
 totals = nbadata.withColumn("POINTS", when((col("EVENTMSGTYPE") == 3) & (~col("DESCRIPTION").rlike("^MISS")), 1).otherwise(0)) \
                 .withColumn("POINTS", when((col("SHOT_TYPE") == "3PT Field Goal") & (col("SHOT_MADE_FLAG") == True), 3).otherwise(col("POINTS"))) \
                 .withColumn("POINTS", when((col("SHOT_TYPE") == "2PT Field Goal") & (col("SHOT_MADE_FLAG") == True), 2).otherwise(col("POINTS")))
@@ -304,13 +299,12 @@ player2_totals = totals.filter((col("EVENTMSGTYPE") < 3) & (col("SHOT_MADE_FLAG"
 
 # Join Dataframes Together
 totals = player1_totals.join(player2_totals, (player1_totals.SEASON == player2_totals.SEASON2) & (player1_totals.ID == player2_totals.PLAYER2_ID), "outer")
-
 totals = totals.withColumn("SEASON", coalesce(totals["SEASON"], totals["SEASON2"])) \
                 .withColumn("ID", coalesce(totals["ID"], totals["PLAYER2_ID"])) \
                 .drop("SEASON2", "PLAYER2_ID") \
                 .fillna(0)
 
-# Create Columns for Stats
+# Create Columns for Percentile stats
 totals = totals.withColumn("PPP", try_divide(col("POINTS"), col("FGA") + 0.44 * col("FTA") + col("TOV"))) \
                 .withColumn("TS%", try_divide(col("POINTS")*100,  2 * (col("FGA") + 0.44 * col("FTA")))) \
                 .withColumn("AST/TOV", try_divide(col("AST"), col("TOV"))) \
